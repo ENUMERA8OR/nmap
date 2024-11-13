@@ -310,7 +310,7 @@ int get_ipid_sequence_32(int numSamples, const u32 *ipids, int islocalhost) {
   }
 }
 
-/* Indentify the ipid sequence for 16-bit IPID values (IPv4) */
+/* Identify the ipid sequence for 16-bit IPID values (IPv4) */
 int get_ipid_sequence_16(int numSamples, const u32 *ipids, int islocalhost) {
   int i;
   int ipid_seq = IPID_SEQ_UNKNOWN;

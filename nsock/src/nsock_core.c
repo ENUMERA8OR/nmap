@@ -404,12 +404,20 @@ void handle_connect_result(struct npool *ms, struct nevent *nse, enum nse_status
    * on whether SSL_connect returns an error of SSL_ERROR_WANT_READ or
    * SSL_ERROR_WANT_WRITE. In that case we will re-enter this function, but we
    * don't want to execute this block again. */
-  if (iod->sd != -1 && !sslconnect_inprogress) {
+  if (iod->sd != -1) {
     int ev = EV_NONE;
-
-    ev |= socket_count_read_dec(iod);
-    ev |= socket_count_write_dec(iod);
-    update_events(iod, ms, nse, EV_NONE, ev);
+    if (!sslconnect_inprogress) {
+      ev |= socket_count_read_dec(iod);
+      ev |= socket_count_write_dec(iod);
+      update_events(iod, ms, nse, EV_NONE, ev);
+    }
+#if HAVE_OPENSSL
+    else if (nse->event_done) {
+      // event_done && sslconnect_inprogress, so timeout or canceled.
+      ev = socket_count_dec_ssl_desire(nse);
+      update_events(iod, ms, nse, EV_NONE, ev);
+    }
+#endif
   }
 
 #if HAVE_OPENSSL
@@ -822,6 +830,8 @@ void handle_read_result(struct npool *ms, struct nevent *nse, enum nse_status st
   }
 }
 
+void process_iod_events(struct npool *nsp, struct niod *nsi, int ev);
+
 #if HAVE_PCAP
 void handle_pcap_read_result(struct npool *ms, struct nevent *nse, enum nse_status status) {
   struct niod *iod = nse->iod;
@@ -873,7 +883,9 @@ int pcap_read_on_nonselect(struct npool *nsp) {
        current != NULL;
        current = next) {
     nse = lnode_nevent2(current);
-    if (do_actual_pcap_read(nse) == 1) {
+    int sd = nsock_iod_get_sd(nse->iod);
+    // We only care about non-selectable handles
+    if (sd == -1 && do_actual_pcap_read(nse) == 1) {
       /* something received */
       ret++;
       break;
@@ -881,6 +893,33 @@ int pcap_read_on_nonselect(struct npool *nsp) {
     next = gh_lnode_next(current);
   }
   return ret;
+}
+
+/* Iterate through pcap events that are not signaled by select() and friends. */
+void iterate_through_pcap_events(struct npool *nsp) {
+  gh_lnode_t *current, *next, *last;
+
+  last = gh_list_last_elem(&nsp->active_iods);
+
+  for (current = gh_list_first_elem(&nsp->active_iods);
+       current != NULL && gh_lnode_prev(current) != last;
+       current = next) {
+    struct niod *nsi = container_of(current, struct niod, nodeq);
+    int processed = 0;
+
+    if (nsi->pcap && nsock_iod_get_sd(nsi) == -1 && nsi->state != NSIOD_STATE_DELETED && nsi->events_pending)
+    {
+      process_iod_events(nsp, nsi, EV_READ);
+      processed = 1;
+    }
+
+    next = gh_lnode_next(current);
+    // Only remove deleted IODs that we've processed all events for.
+    if (processed && nsi->state == NSIOD_STATE_DELETED) {
+      gh_list_remove(&nsp->active_iods, current);
+      gh_list_prepend(&nsp->free_iods, current);
+    }
+  }
 }
 #endif /* HAVE_PCAP */
 
