@@ -172,20 +172,6 @@ static void force_operation(struct npool *nsp, struct nevent *nse);
 static void free_eov(struct npool *nsp, struct extended_overlapped *eov);
 static int map_faulty_errors(int err);
 
-/* defined in nsock_core.c */
-void process_iod_events(struct npool *nsp, struct niod *nsi, int ev);
-void process_event(struct npool *nsp, gh_list_t *evlist, struct nevent *nse, int ev);
-void process_expired_events(struct npool *nsp);
-#if HAVE_PCAP
-int pcap_read_on_nonselect(struct npool *nsp);
-void iterate_through_pcap_events(struct npool *nsp);
-#endif
-
-/* defined in nsock_event.c */
-void update_first_events(struct nevent *nse);
-
-
-extern struct timeval nsock_tod;
 
 int iocp_init(struct npool *nsp) {
   struct iocp_engine_info *iinfo;
@@ -432,15 +418,16 @@ void iterate_through_event_lists(struct npool *nsp) {
         free_eov(nsp, iinfo->eov);
         gh_list_prepend(&nsp->free_iods, &nsi->nodeq);
         iinfo->eov = NULL;
-            continue;
+        continue;
     }
 
     /* Here are more things that should be true */
     assert(iinfo->eov->nse_id == nse->id);
     assert(iinfo->eov == nse->eov);
 
-    if (!HasOverlappedIoCompleted((OVERLAPPED*)iinfo->eov))
+    if (!iinfo->eov->err && !HasOverlappedIoCompleted((OVERLAPPED*)iinfo->eov)) {
         continue;
+    }
 
     gh_list_t *evlist = NULL;
     int ev = 0;
@@ -475,16 +462,9 @@ void iterate_through_event_lists(struct npool *nsp) {
     process_event(nsp, evlist, nse, ev);
 
     if (nse->event_done) {
-      /* event is done, remove it from the event list and update IOD pointers
-      * to the first events of each kind */
-      update_first_events(nse);
-      gh_list_remove(evlist, &nse->nodeq_io);
-      gh_list_append(&nsp->free_events, &nse->nodeq_io);
-
-      if (nse->timeout.tv_sec)
-        gh_heap_remove(&nsp->expirables, &nse->expire);
       if (nse->eov)
           terminate_overlapped_event(nsp, nse);
+      nevent_unref(nsp, nse);
     }
     else {
         assert(nse->eov->forced_operation != IOCP_NOT_FORCED);
